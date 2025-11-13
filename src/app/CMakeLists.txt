@@ -27,7 +27,14 @@ target_link_libraries(Quantiloom
         libQuantiloom
 )
 
-target_compile_definitions(Quantiloom PRIVATE QL_USE_SHARED)
+target_compile_definitions(Quantiloom
+    PRIVATE
+        QL_USE_SHARED
+        QUANTILOOM_APP_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+        QUANTILOOM_APP_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+        QUANTILOOM_APP_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+        QUANTILOOM_APP_VERSION_STRING=${PROJECT_VERSION}
+)
 
 # C++20 standard and RPATH set to executable directory
 set_target_properties(Quantiloom PROPERTIES
@@ -35,6 +42,8 @@ set_target_properties(Quantiloom PROPERTIES
     CXX_STANDARD_REQUIRED ON
     BUILD_RPATH_USE_ORIGIN ON
     INSTALL_RPATH "$ORIGIN"
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
 )
 
 # Copy the library to the executable directory
