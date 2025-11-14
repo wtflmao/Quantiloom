@@ -29,11 +29,7 @@ target_link_libraries(Quantiloom
 
 target_compile_definitions(Quantiloom
     PRIVATE
-        QL_USE_SHARED
-        QUANTILOOM_APP_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
-        QUANTILOOM_APP_VERSION_MINOR=${PROJECT_VERSION_MINOR}
-        QUANTILOOM_APP_VERSION_PATCH=${PROJECT_VERSION_PATCH}
-        QUANTILOOM_APP_VERSION_STRING=${PROJECT_VERSION}
+        QL_USE_STATIC
 )
 
 # C++20 standard and RPATH set to executable directory
