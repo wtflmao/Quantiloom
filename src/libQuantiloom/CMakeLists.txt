@@ -30,6 +30,30 @@ add_library(libQuantiloom STATIC
     io/LUTLoader.cpp
     io/LUTLoader.hpp
 
+    # Renderer module (Vulkan + VMA wrappers)
+    renderer/VmaImpl.cpp
+    renderer/VulkanContext.cpp
+    renderer/VulkanContext.hpp
+    renderer/GpuBuffer.cpp
+    renderer/GpuBuffer.hpp
+    renderer/GpuImage.cpp
+    renderer/GpuImage.hpp
+    renderer/Upload.cpp
+    renderer/Upload.hpp
+    renderer/RayTracingPipeline.cpp
+    renderer/RayTracingPipeline.hpp
+    renderer/AccelerationStructure.cpp
+    renderer/AccelerationStructure.hpp
+    renderer/CommandHelper.cpp
+    renderer/CommandHelper.hpp
+
+    # Scene module
+    scene/Camera.hpp
+    scene/Mesh.hpp
+    scene/Material.hpp
+    scene/Scene.cpp
+    scene/Scene.hpp
+
     # Generated files
     ${CMAKE_CURRENT_BINARY_DIR}/core/LibVersion.hpp
 )
@@ -42,6 +66,11 @@ target_compile_definitions(libQuantiloom
         QUANTILOOM_LIB_VERSION_PATCH=${PROJECT_VERSION_PATCH}
         QUANTILOOM_LIB_VERSION_STRING=${PROJECT_VERSION}
 )
+
+# Enable validation layers in Debug mode
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(libQuantiloom PRIVATE QUANTILOOM_ENABLE_VALIDATION)
+endif()
 
 # Set library output name (remove "lib" prefix for cleaner names)
 set_target_properties(libQuantiloom PROPERTIES
@@ -69,6 +98,9 @@ target_link_libraries(libQuantiloom
         Imath::Imath
         hdf5-static
         hdf5_cpp-static
+        Vulkan::Vulkan
+        VMA
+        glm::glm
 )
 
 # Add HDF5 include directories if using find_package

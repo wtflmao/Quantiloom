@@ -1,20 +1,71 @@
 #!/usr/bin/env python3
 """
-Generate a dummy atmosphere LUT for testing Quantiloom.
+Generate a minimal dummy LUT for Quantiloom M1 testing.
 
-This script creates a physically-plausible (but simplified) LUT based on:
-- Solar irradiance: CIE D65 standard illuminant
-- Sky radiance: Simplified Rayleigh scattering model
-- Transmittance: Beer-Lambert attenuation with Rayleigh optical depth
+The LUT contains a single entry with:
+- Sun direction: normalized vector pointing down-right (+X, -Y, -Z)
+- Sun radiance: moderate solar irradiance (W·sr⁻¹·m⁻²)
+- Sky radiance: diffuse hemispherical background (W·sr⁻¹·m⁻²)
 
-Output: HDF5 file compatible with LUTLoader
+Output: dummy_lut.h5 (HDF5 format)
 """
 
-import numpy as np
 import h5py
-import argparse
-from pathlib import Path
+import numpy as np
+import os
 
+def generate_dummy_lut(output_path):
+    """
+    Generate a single-entry LUT matching the shader LUTData structure:
+
+    struct LUTData {
+        float3 sunDirection;   // Normalized sun direction
+        float  _pad0;
+        float3 sunRadiance;    // Direct sun radiance (W·sr⁻¹·m⁻²)
+        float  _pad1;
+        float3 skyRadiance;    // Hemispherical sky radiance (W·sr⁻¹·m⁻²)
+        float  _pad2;
+    };
+    """
+
+    # Sun direction: 45-degree angle (down-right in view)
+    sun_dir = np.array([0.7071, -0.7071, -0.3], dtype=np.float32)
+    sun_dir = sun_dir / np.linalg.norm(sun_dir)  # Ensure normalized
+
+    # Sun radiance: Moderate solar irradiance
+    # For M1 testing, use moderate values to avoid overexposure
+    sun_radiance = np.array([2.0, 2.0, 2.0], dtype=np.float32)
+
+    # Sky radiance: Diffuse sky background (gentle blue)
+    sky_radiance = np.array([0.3, 0.5, 0.8], dtype=np.float32)
+
+    # Create HDF5 file
+    with h5py.File(output_path, 'w') as f:
+        # Metadata
+        f.attrs['description'] = 'Dummy LUT for Quantiloom M1 testing'
+        f.attrs['version'] = '1.0'
+        f.attrs['mode'] = 'M1_simplified'
+
+        # Single-entry LUT (no wavelength or angle dependence)
+        f.create_dataset('sun_direction', data=sun_dir, dtype='f4')
+        f.create_dataset('sun_radiance', data=sun_radiance, dtype='f4')
+        f.create_dataset('sky_radiance', data=sky_radiance, dtype='f4')
+
+        # Optional: Add wavelength metadata
+        f.attrs['wavelength_nm'] = 550.0  # Green
+
+    print(f"✓ Dummy LUT generated: {output_path}")
+    print(f"  Sun direction: [{sun_dir[0]:.3f}, {sun_dir[1]:.3f}, {sun_dir[2]:.3f}]")
+    print(f"  Sun radiance:  [{sun_radiance[0]:.1f}, {sun_radiance[1]:.1f}, {sun_radiance[2]:.1f}] W·sr⁻¹·m⁻²")
+    print(f"  Sky radiance:  [{sky_radiance[0]:.1f}, {sky_radiance[1]:.1f}, {sky_radiance[2]:.1f}] W·sr⁻¹·m⁻²")
+
+if __name__ == "__main__":
+    # Output to assets/luts/
+    output_dir = os.path.join(os.path.dirname(__file__), "../../assets/luts")
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_path = os.path.join(output_dir, "dummy_lut.h5")
+    generate_dummy_lut(output_path)
 
 def cie_d65_spectrum(wavelengths_nm):
     """
@@ -110,87 +161,3 @@ def atmospheric_transmittance(wavelengths_nm, zenith_angle_deg=30.0):
 
     return transmittance
 
-
-def generate_dummy_lut(
-    output_path,
-    lambda_min=380.0,
-    lambda_max=2500.0,
-    num_samples=212,
-    zenith_angle=30.0
-):
-    """
-    Generate dummy atmosphere LUT and save to HDF5.
-
-    Args:
-        output_path: output HDF5 file path
-        lambda_min: minimum wavelength (nm)
-        lambda_max: maximum wavelength (nm)
-        num_samples: number of wavelength samples
-        zenith_angle: solar zenith angle (degrees)
-    """
-    print(f"Generating dummy LUT:")
-    print(f"  Wavelength range: {lambda_min} - {lambda_max} nm")
-    print(f"  Number of samples: {num_samples}")
-    print(f"  Solar zenith angle: {zenith_angle} deg")
-
-    # Generate wavelength array
-    wavelengths = np.linspace(lambda_min, lambda_max, num_samples, dtype=np.float32)
-
-    # Generate spectral data
-    solar_irradiance = cie_d65_spectrum(wavelengths).astype(np.float32)
-    sky_radiance = rayleigh_sky_radiance(wavelengths).astype(np.float32)
-    transmittance = atmospheric_transmittance(wavelengths, zenith_angle).astype(np.float32)
-
-    # Create HDF5 file
-    with h5py.File(output_path, 'w') as f:
-        # Write datasets
-        f.create_dataset('/wavelengths', data=wavelengths)
-        f.create_dataset('/solar_irradiance', data=solar_irradiance)
-        f.create_dataset('/sky_radiance', data=sky_radiance)
-        f.create_dataset('/transmittance', data=transmittance)
-
-        # Write metadata
-        meta_group = f.create_group('/metadata')
-        meta_group.attrs['model'] = 'Dummy_Rayleigh'
-        meta_group.attrs['solar_zenith_deg'] = str(zenith_angle)
-        meta_group.attrs['visibility_km'] = '23.0'  # Standard clear atmosphere
-        meta_group.attrs['description'] = 'Simplified Rayleigh atmosphere for testing'
-        meta_group.attrs['generator'] = 'generate_dummy_lut.py'
-
-    print(f"  Output: {output_path}")
-    print(f"  Solar irradiance range: {solar_irradiance.min():.2e} - {solar_irradiance.max():.2e} W/m^2/nm")
-    print(f"  Sky radiance range: {sky_radiance.min():.2e} - {sky_radiance.max():.2e} W/m^2/sr/nm")
-    print(f"  Transmittance range: {transmittance.min():.4f} - {transmittance.max():.4f}")
-    print("Done!")
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Generate dummy atmosphere LUT for Quantiloom')
-    parser.add_argument('-o', '--output', type=str, required=True,
-                        help='Output HDF5 file path')
-    parser.add_argument('--lambda-min', type=float, default=380.0,
-                        help='Minimum wavelength (nm), default: 380')
-    parser.add_argument('--lambda-max', type=float, default=2500.0,
-                        help='Maximum wavelength (nm), default: 2500')
-    parser.add_argument('--num-samples', type=int, default=212,
-                        help='Number of wavelength samples, default: 212')
-    parser.add_argument('--zenith', type=float, default=30.0,
-                        help='Solar zenith angle (degrees), default: 30')
-
-    args = parser.parse_args()
-
-    # Ensure output directory exists
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    generate_dummy_lut(
-        output_path=str(output_path),
-        lambda_min=args.lambda_min,
-        lambda_max=args.lambda_max,
-        num_samples=args.num_samples,
-        zenith_angle=args.zenith
-    )
-
-
-if __name__ == '__main__':
-    main()
