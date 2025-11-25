@@ -1,4 +1,5 @@
 #include "AccelerationStructure.hpp"
+#include "CommandHelper.hpp"
 #include "core/Log.hpp"
 #include <glm/gtc/type_ptr.hpp>
 #include <stdexcept>
@@ -10,16 +11,99 @@ namespace quantiloom {
 // BLAS Implementation
 // ============================================================================
 
-BLAS::BLAS(VulkanContext& context, const Mesh& mesh)
+BLAS::BLAS(VulkanContext& context, const GeometryPrimitive& primitive)
     : m_context(context)
-    , m_mesh(mesh)
+    , m_primitive(primitive)
 {
-    if (mesh.positions.empty()) {
-        throw std::runtime_error("Cannot create BLAS from empty mesh");
+    if (primitive.positions.empty()) {
+        throw std::runtime_error("Cannot create BLAS from empty primitive");
     }
 
-    QL_LOG_INFO("Creating BLAS for mesh with {} vertices, {} triangles",
-                mesh.positions.size(), mesh.indices.size() / 3);
+    QL_LOG_INFO("Creating BLAS for primitive with {} vertices, {} triangles",
+                primitive.positions.size(), primitive.indices.size() / 3);
+
+    // Upload vertex and index data to GPU immediately (using ExecuteImmediate)
+    // This ensures staging buffers are not destroyed before GPU upload completes
+    UploadGeometryBuffers();
+}
+
+void BLAS::UploadGeometryBuffers() {
+    VmaAllocator allocator = m_context.GetAllocator();
+
+    const VkDeviceSize vertexBufferSize = m_primitive.positions.size() * sizeof(glm::vec3);
+    const VkDeviceSize indexBufferSize = m_primitive.indices.size() * sizeof(u32);
+
+    // Create device-local buffers (GPU-only, fastest for AS build and shader access)
+    // CRITICAL: Add VK_BUFFER_USAGE_STORAGE_BUFFER_BIT for shader StructuredBuffer access
+    m_vertexBuffer = std::make_unique<GpuBuffer>(
+        allocator,
+        vertexBufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,  // Required for StructuredBuffer in shaders
+        VMA_MEMORY_USAGE_GPU_ONLY
+    );
+
+    m_indexBuffer = std::make_unique<GpuBuffer>(
+        allocator,
+        indexBufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,  // Required for StructuredBuffer in shaders
+        VMA_MEMORY_USAGE_GPU_ONLY
+    );
+
+    // Upload data using ExecuteImmediate (ensures staging buffers live until upload completes)
+    CommandHelper::ExecuteImmediate(m_context, [&](VkCommandBuffer cmd) {
+        // Create staging buffers (CPU-accessible)
+        GpuBuffer vertexStaging(
+            allocator,
+            vertexBufferSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VMA_MEMORY_USAGE_CPU_ONLY
+        );
+
+        GpuBuffer indexStaging(
+            allocator,
+            indexBufferSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VMA_MEMORY_USAGE_CPU_ONLY
+        );
+
+        // Upload data to staging buffers
+        vertexStaging.Upload(m_primitive.positions.data(), vertexBufferSize);
+        indexStaging.Upload(m_primitive.indices.data(), indexBufferSize);
+
+        // Copy staging → device-local
+        VkBufferCopy vertexCopyRegion{};
+        vertexCopyRegion.size = vertexBufferSize;
+        vkCmdCopyBuffer(cmd, vertexStaging.GetHandle(), m_vertexBuffer->GetHandle(), 1, &vertexCopyRegion);
+
+        VkBufferCopy indexCopyRegion{};
+        indexCopyRegion.size = indexBufferSize;
+        vkCmdCopyBuffer(cmd, indexStaging.GetHandle(), m_indexBuffer->GetHandle(), 1, &indexCopyRegion);
+
+        // Insert barrier - transfer writes must complete before AS build reads
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+        vkCmdPipelineBarrier(
+            cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            0,
+            1, &barrier,
+            0, nullptr,
+            0, nullptr
+        );
+    });
+
+    QL_LOG_INFO("  Uploaded geometry via staging buffers: {} vertices, {} indices",
+                m_primitive.positions.size(), m_primitive.indices.size());
 }
 
 BLAS::~BLAS() {
@@ -42,7 +126,7 @@ BLAS::BLAS(BLAS&& other) noexcept
     , m_scratchBuffer(std::move(other.m_scratchBuffer))
     , m_deviceAddress(other.m_deviceAddress)
     , m_built(other.m_built)
-    , m_mesh(other.m_mesh)
+    , m_primitive(other.m_primitive)
 {
     other.m_as = VK_NULL_HANDLE;
     other.m_deviceAddress = 0;
@@ -82,6 +166,11 @@ void BLAS::Build(VkCommandBuffer cmd) {
     VkDevice device = m_context.GetDevice();
     VmaAllocator allocator = m_context.GetAllocator();
 
+    // Verify geometry buffers were uploaded in constructor
+    if (!m_vertexBuffer || !m_indexBuffer) {
+        throw std::runtime_error("Geometry buffers not uploaded. This should not happen.");
+    }
+
     // Get function pointers
     auto vkGetAccelerationStructureBuildSizesKHR = (PFN_vkGetAccelerationStructureBuildSizesKHR)
         vkGetDeviceProcAddr(device, "vkGetAccelerationStructureBuildSizesKHR");
@@ -97,29 +186,6 @@ void BLAS::Build(VkCommandBuffer cmd) {
         throw std::runtime_error("Failed to load acceleration structure functions");
     }
 
-    // Upload vertex and index data to GPU
-    const VkDeviceSize vertexBufferSize = m_mesh.positions.size() * sizeof(glm::vec3);
-    const VkDeviceSize indexBufferSize = m_mesh.indices.size() * sizeof(u32);
-
-    m_vertexBuffer = std::make_unique<GpuBuffer>(
-        allocator,
-        vertexBufferSize,
-        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VMA_MEMORY_USAGE_CPU_TO_GPU
-    );
-
-    m_indexBuffer = std::make_unique<GpuBuffer>(
-        allocator,
-        indexBufferSize,
-        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VMA_MEMORY_USAGE_CPU_TO_GPU
-    );
-
-    m_vertexBuffer->Upload(m_mesh.positions.data(), vertexBufferSize);
-    m_indexBuffer->Upload(m_mesh.indices.data(), indexBufferSize);
-
     // Define geometry (triangles)
     VkAccelerationStructureGeometryKHR geometry{};
     geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -130,7 +196,7 @@ void BLAS::Build(VkCommandBuffer cmd) {
     geometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
     geometry.geometry.triangles.vertexData.deviceAddress = m_vertexBuffer->GetDeviceAddress(device);
     geometry.geometry.triangles.vertexStride = sizeof(glm::vec3);
-    geometry.geometry.triangles.maxVertex = static_cast<u32>(m_mesh.positions.size() - 1);
+    geometry.geometry.triangles.maxVertex = static_cast<u32>(m_primitive.positions.size() - 1);
     geometry.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
     geometry.geometry.triangles.indexData.deviceAddress = m_indexBuffer->GetDeviceAddress(device);
 
@@ -144,7 +210,7 @@ void BLAS::Build(VkCommandBuffer cmd) {
     buildInfo.pGeometries = &geometry;
 
     // Query build sizes
-    u32 primitiveCount = static_cast<u32>(m_mesh.indices.size() / 3);
+    u32 primitiveCount = static_cast<u32>(m_primitive.indices.size() / 3);
     VkAccelerationStructureBuildSizesInfoKHR sizeInfo{};
     sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
@@ -289,7 +355,7 @@ TLAS& TLAS::operator=(TLAS&& other) noexcept {
     return *this;
 }
 
-void TLAS::AddInstance(const BLAS& blas, const glm::mat4& transform) {
+void TLAS::AddInstance(const BLAS& blas, u32 materialId, const glm::mat4& transform) {
     if (m_built) {
         throw std::runtime_error("Cannot add instance to already-built TLAS");
     }
@@ -305,16 +371,16 @@ void TLAS::AddInstance(const BLAS& blas, const glm::mat4& transform) {
 
     VkAccelerationStructureInstanceKHR instance{};
     instance.transform = vkTransform;
-    instance.instanceCustomIndex = static_cast<u32>(m_instances.size());
+    instance.instanceCustomIndex = materialId;  // Material ID accessible in shader via InstanceID()
     instance.mask = 0xFF;  // Visible to all rays
-    instance.instanceShaderBindingTableRecordOffset = 0;  // M1: single hit group
+    instance.instanceShaderBindingTableRecordOffset = 0;  // Single hit group
     instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
     instance.accelerationStructureReference = blas.GetDeviceAddress();
 
     m_instances.push_back(instance);
 
-    QL_LOG_INFO("  Added instance {} to TLAS (BLAS addr: 0x{:x})",
-                m_instances.size() - 1, blas.GetDeviceAddress());
+    QL_LOG_INFO("  Added instance {} to TLAS (material {}, BLAS addr: 0x{:x})",
+                m_instances.size() - 1, materialId, blas.GetDeviceAddress());
 }
 
 void TLAS::Build(VkCommandBuffer cmd) {

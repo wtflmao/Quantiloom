@@ -209,6 +209,27 @@ if(VulkanMemoryAllocator_ADDED)
     message(STATUS "VMA (Vulkan Memory Allocator) v3.3.0 added")
 endif()
 
+# tinygltf: glTF 2.0 loader (header-only)
+CPMAddPackage(
+    NAME tinygltf
+    VERSION 2.9.7
+    GITHUB_REPOSITORY syoyo/tinygltf
+    DOWNLOAD_ONLY YES
+)
+
+# tinygltf is header-only, create interface library
+if(tinygltf_ADDED)
+    add_library(tinygltf INTERFACE)
+    target_include_directories(tinygltf INTERFACE
+        ${tinygltf_SOURCE_DIR}
+    )
+    # tinygltf requires stb_image for texture loading (already bundled)
+    target_compile_definitions(tinygltf INTERFACE
+        TINYGLTF_NO_EXTERNAL_IMAGE  # Use built-in stb_image
+    )
+    message(STATUS "tinygltf v2.9.7 added (header-only glTF 2.0 loader)")
+endif()
+
 # GLM: Mathematics library for graphics (header-only)
 CPMAddPackage(
     NAME glm
@@ -222,6 +243,9 @@ message(STATUS "Dependencies resolved via CPM.cmake")
 # ============================================================================
 # Subdirectories
 # ============================================================================
+
+# Shaders (compile before libraries/apps)
+add_subdirectory(src/shaders)
 
 # Core library
 add_subdirectory(src/libQuantiloom)

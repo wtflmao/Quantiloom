@@ -63,14 +63,23 @@ void CommandHelper::ExecuteImmediate(
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
+    QL_LOG_INFO("  [DEBUG CommandHelper] Submitting commands to GPU queue...");
     result = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (result != VK_SUCCESS) {
         vkDestroyCommandPool(device, commandPool, nullptr);
-        throw std::runtime_error("Failed to submit command buffer");
+        QL_LOG_ERROR("  [DEBUG CommandHelper] vkQueueSubmit FAILED with VkResult: {}", static_cast<int>(result));
+        throw std::runtime_error("Failed to submit command buffer (VkResult: " + std::to_string(result) + ")");
     }
+    QL_LOG_INFO("  [DEBUG CommandHelper] Commands submitted successfully, waiting for GPU...");
 
     // Wait for completion (synchronous)
-    vkQueueWaitIdle(queue);
+    result = vkQueueWaitIdle(queue);
+    if (result != VK_SUCCESS) {
+        vkDestroyCommandPool(device, commandPool, nullptr);
+        QL_LOG_ERROR("  [DEBUG CommandHelper] vkQueueWaitIdle FAILED with VkResult: {} (GPU CRASHED)", static_cast<int>(result));
+        throw std::runtime_error("Failed to wait for queue idle (VkResult: " + std::to_string(result) + ")");
+    }
+    QL_LOG_INFO("  [DEBUG CommandHelper] GPU execution completed successfully");
 
     // Cleanup
     vkDestroyCommandPool(device, commandPool, nullptr);
@@ -111,6 +120,20 @@ void CommandHelper::TransitionImageLayout(
         barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         dstStage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        // Prepare for texture upload (buffer -> image)
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        // After upload, prepare for shader reads
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dstStage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     }
     else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
         // Prepare for readback (e.g., copying to staging buffer)

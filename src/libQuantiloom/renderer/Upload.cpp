@@ -1,4 +1,5 @@
 #include "Upload.hpp"
+#include "CommandHelper.hpp"
 #include "core/Log.hpp"
 #include <stdexcept>
 #include <cstring>
@@ -71,14 +72,14 @@ VkCommandPool CreateTransferCommandPool(VkDevice device, u32 queueFamily) {
 
 std::unique_ptr<GpuBuffer> UploadVertexBuffer(
     const VulkanContext& ctx,
-    const Mesh& mesh) {
+    const GeometryPrimitive& primitive) {
 
-    if (mesh.positions.empty()) {
-        QL_LOG_WARN("Mesh has no vertices, skipping vertex buffer upload");
+    if (primitive.positions.empty()) {
+        QL_LOG_WARN("GeometryPrimitive has no vertices, skipping vertex buffer upload");
         return nullptr;
     }
 
-    VkDeviceSize bufferSize = sizeof(glm::vec3) * mesh.positions.size();
+    VkDeviceSize bufferSize = sizeof(glm::vec3) * primitive.positions.size();
 
     // Create staging buffer (HOST_VISIBLE for CPU write)
     GpuBuffer stagingBuffer(
@@ -90,7 +91,7 @@ std::unique_ptr<GpuBuffer> UploadVertexBuffer(
 
     // Upload data to staging buffer
     void* data = stagingBuffer.Map();
-    std::memcpy(data, mesh.positions.data(), bufferSize);
+    std::memcpy(data, primitive.positions.data(), bufferSize);
     stagingBuffer.Unmap();
 
     // Create device-local buffer (GPU_ONLY for optimal performance)
@@ -119,7 +120,7 @@ std::unique_ptr<GpuBuffer> UploadVertexBuffer(
     vkDestroyCommandPool(ctx.GetDevice(), commandPool, nullptr);
 
     QL_LOG_INFO("Uploaded vertex buffer: {} vertices ({} bytes)",
-                mesh.positions.size(), bufferSize);
+                primitive.positions.size(), bufferSize);
 
     return deviceBuffer;
 }
@@ -130,14 +131,14 @@ std::unique_ptr<GpuBuffer> UploadVertexBuffer(
 
 std::unique_ptr<GpuBuffer> UploadIndexBuffer(
     const VulkanContext& ctx,
-    const Mesh& mesh) {
+    const GeometryPrimitive& primitive) {
 
-    if (mesh.indices.empty()) {
-        QL_LOG_WARN("Mesh has no indices, skipping index buffer upload");
+    if (primitive.indices.empty()) {
+        QL_LOG_WARN("GeometryPrimitive has no indices, skipping index buffer upload");
         return nullptr;
     }
 
-    VkDeviceSize bufferSize = sizeof(u32) * mesh.indices.size();
+    VkDeviceSize bufferSize = sizeof(u32) * primitive.indices.size();
 
     // Create staging buffer
     GpuBuffer stagingBuffer(
@@ -149,7 +150,7 @@ std::unique_ptr<GpuBuffer> UploadIndexBuffer(
 
     // Upload data to staging buffer
     void* data = stagingBuffer.Map();
-    std::memcpy(data, mesh.indices.data(), bufferSize);
+    std::memcpy(data, primitive.indices.data(), bufferSize);
     stagingBuffer.Unmap();
 
     // Create device-local buffer
@@ -178,24 +179,133 @@ std::unique_ptr<GpuBuffer> UploadIndexBuffer(
     vkDestroyCommandPool(ctx.GetDevice(), commandPool, nullptr);
 
     QL_LOG_INFO("Uploaded index buffer: {} indices ({} bytes)",
-                mesh.indices.size(), bufferSize);
+                primitive.indices.size(), bufferSize);
 
     return deviceBuffer;
 }
 
 // ============================================================================
-// Image Upload (placeholder for M1+)
+// Image Upload
 // ============================================================================
 
 std::unique_ptr<GpuImage> UploadImage(
     const VulkanContext& ctx,
     const Image& cpuImage) {
 
-    (void)ctx;
-    (void)cpuImage;
+    if (!cpuImage.IsValid()) {
+        QL_LOG_WARN("Image is invalid, skipping upload");
+        return nullptr;
+    }
 
-    QL_LOG_WARN("UploadImage not yet implemented (TODO: M1)");
-    return nullptr;
+    // Determine VkFormat based on channel count
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    u32 bytesPerPixel = 0;
+
+    switch (cpuImage.channels) {
+        case 1:
+            format = VK_FORMAT_R32_SFLOAT;
+            bytesPerPixel = sizeof(f32) * 1;
+            break;
+        case 2:
+            format = VK_FORMAT_R32G32_SFLOAT;
+            bytesPerPixel = sizeof(f32) * 2;
+            break;
+        case 3:
+            format = VK_FORMAT_R32G32B32_SFLOAT;
+            bytesPerPixel = sizeof(f32) * 3;
+            break;
+        case 4:
+            format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            bytesPerPixel = sizeof(f32) * 4;
+            break;
+        default:
+            QL_LOG_ERROR("Unsupported channel count: {}", cpuImage.channels);
+            return nullptr;
+    }
+
+    VkDeviceSize bufferSize = static_cast<VkDeviceSize>(cpuImage.width) * cpuImage.height * bytesPerPixel;
+
+    QL_LOG_INFO("Uploading image: {}x{} ({} channels, {} bytes)",
+                cpuImage.width, cpuImage.height, cpuImage.channels, bufferSize);
+
+    // Step 1: Create staging buffer (CPU-accessible)
+    GpuBuffer stagingBuffer(
+        ctx.GetAllocator(),
+        bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VMA_MEMORY_USAGE_CPU_ONLY
+    );
+
+    // Step 2: Upload CPU data to staging buffer
+    void* data = stagingBuffer.Map();
+    std::memcpy(data, cpuImage.data.data(), bufferSize);
+    stagingBuffer.Unmap();
+
+    // Step 3: Create device-local GPU image
+    auto gpuImage = std::make_unique<GpuImage>(
+        ctx.GetAllocator(),
+        ctx.GetDevice(),
+        cpuImage.width,
+        cpuImage.height,
+        format,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VMA_MEMORY_USAGE_GPU_ONLY,
+        1  // mipLevels
+    );
+
+    // Step 4: Execute upload via command buffer
+    VkCommandPool commandPool = CreateTransferCommandPool(ctx.GetDevice(), ctx.GetGraphicsQueueFamily());
+    VkCommandBuffer cmd = BeginSingleTimeCommands(ctx.GetDevice(), commandPool);
+
+    // Transition: UNDEFINED -> TRANSFER_DST_OPTIMAL
+    CommandHelper::TransitionImageLayout(
+        cmd,
+        gpuImage->GetImage(),
+        format,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1  // mipLevels
+    );
+
+    // Define copy region (buffer -> image)
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;   // Tightly packed
+    region.bufferImageHeight = 0; // Tightly packed
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {cpuImage.width, cpuImage.height, 1};
+
+    // Copy staging buffer to GPU image
+    vkCmdCopyBufferToImage(
+        cmd,
+        stagingBuffer.GetHandle(),
+        gpuImage->GetImage(),
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &region
+    );
+
+    // Transition: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+    CommandHelper::TransitionImageLayout(
+        cmd,
+        gpuImage->GetImage(),
+        format,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        1  // mipLevels
+    );
+
+    EndSingleTimeCommands(ctx.GetDevice(), commandPool, ctx.GetGraphicsQueue(), cmd);
+    vkDestroyCommandPool(ctx.GetDevice(), commandPool, nullptr);
+
+    QL_LOG_INFO("  Image uploaded successfully ({}x{}, format: {})",
+                cpuImage.width, cpuImage.height, static_cast<int>(format));
+
+    return gpuImage;
 }
 
 } // namespace quantiloom

@@ -48,6 +48,11 @@ VulkanContext::VulkanContext() {
 VulkanContext::~VulkanContext() {
     QL_LOG_INFO("Destroying Vulkan context...");
 
+    // Wait for all GPU operations to complete before destroying resources
+    if (m_device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(m_device);
+    }
+
     // Destruction order: reverse of construction
     // VMA allocator must be destroyed BEFORE device
     if (m_allocator != VK_NULL_HANDLE) {
@@ -261,6 +266,8 @@ void VulkanContext::CreateDevice() {
     features12.bufferDeviceAddress = VK_TRUE;
     features12.descriptorIndexing = VK_TRUE;
     features12.runtimeDescriptorArray = VK_TRUE;
+    features12.descriptorBindingPartiallyBound = VK_TRUE;  // Required for PARTIALLY_BOUND_BIT
+    features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;  // Required for NonUniformResourceIndex
     features12.pNext = &features13;
 
     // Enable Ray Tracing features

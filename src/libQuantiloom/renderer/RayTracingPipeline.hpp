@@ -4,6 +4,7 @@
 #include "VulkanContext.hpp"
 #include "GpuBuffer.hpp"
 #include "GpuImage.hpp"
+#include "scene/Camera.hpp"
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <string>
@@ -70,12 +71,27 @@ public:
     // Bind LUT buffer (binding 2)
     void BindLUTBuffer(const GpuBuffer& buffer);
 
+    // Bind geometry buffers (binding 3: vertex, binding 4: index)
+    void BindGeometryBuffers(const GpuBuffer& vertexBuffer, const GpuBuffer& indexBuffer);
+
+    // Bind material buffer (binding 5)
+    void BindMaterialBuffer(const GpuBuffer& buffer);
+
+    // Bind texture arrays (binding 6: textures, binding 7: samplers)
+    // Uses bindless descriptor indexing (VK_EXT_descriptor_indexing)
+    // If imageViews is empty, binds a single dummy white texture
+    void BindTextures(const std::vector<VkImageView>& imageViews,
+                      const std::vector<VkSampler>& samplers);
+
     // Update all bindings (call after all Bind* calls)
     void UpdateDescriptorSets();
 
     // ========================================================================
     // Rendering
     // ========================================================================
+
+    // Set camera parameters (call before TraceRays)
+    void SetCameraData(const struct CameraData& cameraData);
 
     // Record trace rays command into provided command buffer
     void TraceRays(VkCommandBuffer cmd, u32 width, u32 height);
@@ -143,6 +159,9 @@ private:
 
     // Ray Tracing properties (cached from context)
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{};
+
+    // Camera data (for push constants)
+    CameraData m_cameraData{};
 };
 
 } // namespace quantiloom

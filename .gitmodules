@@ -1,0 +1,7 @@
+[submodule "reference-only/vk_raytracing_tutorial_KHR"]
+	path = reference-only/vk_raytracing_tutorial_KHR
+	url = https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR.git
+
+[submodule "assets/models"]
+	path = assets/models/glTF-Sample-Models
+	url = https://github.com/KhronosGroup/glTF-Sample-Models.git

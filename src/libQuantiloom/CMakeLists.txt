@@ -29,6 +29,8 @@ add_library(libQuantiloom STATIC
     io/SpectralIO.hpp
     io/LUTLoader.cpp
     io/LUTLoader.hpp
+    io/GltfLoader.cpp
+    io/GltfLoader.hpp
 
     # Renderer module (Vulkan + VMA wrappers)
     renderer/VmaImpl.cpp
@@ -40,6 +42,8 @@ add_library(libQuantiloom STATIC
     renderer/GpuImage.hpp
     renderer/Upload.cpp
     renderer/Upload.hpp
+    renderer/TextureManager.cpp
+    renderer/TextureManager.hpp
     renderer/RayTracingPipeline.cpp
     renderer/RayTracingPipeline.hpp
     renderer/AccelerationStructure.cpp
@@ -48,9 +52,11 @@ add_library(libQuantiloom STATIC
     renderer/CommandHelper.hpp
 
     # Scene module
+    scene/Camera.cpp
     scene/Camera.hpp
     scene/Mesh.hpp
     scene/Material.hpp
+    scene/Texture.hpp
     scene/Scene.cpp
     scene/Scene.hpp
 
@@ -101,6 +107,7 @@ target_link_libraries(libQuantiloom
         Vulkan::Vulkan
         VMA
         glm::glm
+        tinygltf
 )
 
 # Add HDF5 include directories if using find_package

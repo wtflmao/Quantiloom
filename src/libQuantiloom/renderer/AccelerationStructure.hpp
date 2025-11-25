@@ -22,9 +22,9 @@
 // - Must be destroyed BEFORE VulkanContext
 // - Non-copyable, movable
 //
-// Usage (M1 simplified):
-//   1. Create BLAS for each Mesh
-//   2. Create TLAS referencing all BLAS instances
+// Usage (M2 updated):
+//   1. Create BLAS for each GeometryPrimitive (in each Mesh)
+//   2. Create TLAS referencing all BLAS instances with transforms
 //   3. Bind TLAS to ray tracing pipeline
 // ============================================================================
 
@@ -36,7 +36,7 @@ namespace quantiloom {
 
 class QL_API BLAS {
 public:
-    BLAS(VulkanContext& context, const Mesh& mesh);
+    BLAS(VulkanContext& context, const GeometryPrimitive& primitive);
     ~BLAS();
 
     // Non-copyable, movable
@@ -53,7 +53,14 @@ public:
     VkDeviceAddress GetDeviceAddress() const { return m_deviceAddress; }
     bool IsBuilt() const { return m_built; }
 
+    // Geometry buffer accessors (for shader binding)
+    const GpuBuffer& GetVertexBuffer() const { return *m_vertexBuffer; }
+    const GpuBuffer& GetIndexBuffer() const { return *m_indexBuffer; }
+
 private:
+    // Helper: Upload vertex and index data to GPU buffers
+    void UploadGeometryBuffers();
+
     VulkanContext& m_context;
 
     // Acceleration structure handle
@@ -72,7 +79,7 @@ private:
     bool m_built = false;
 
     // Cached geometry info
-    const Mesh& m_mesh;
+    const GeometryPrimitive& m_primitive;
 };
 
 // ============================================================================
@@ -91,7 +98,8 @@ public:
     TLAS& operator=(TLAS&& other) noexcept;
 
     // Add BLAS instance to TLAS (must call before Build)
-    void AddInstance(const BLAS& blas, const glm::mat4& transform = glm::mat4(1.0f));
+    // materialId: Index into Scene::materials, passed to shader via instanceCustomIndex
+    void AddInstance(const BLAS& blas, u32 materialId, const glm::mat4& transform = glm::mat4(1.0f));
 
     // Build TLAS from instances (records commands into cmd buffer)
     void Build(VkCommandBuffer cmd);
